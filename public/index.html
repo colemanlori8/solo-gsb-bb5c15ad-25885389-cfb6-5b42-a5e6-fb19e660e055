@@ -57,6 +57,20 @@
 
       <section class="card">
         <h2>3. 方案存取</h2>
+        <div class="meta-edit">
+          <label class="meta-tags-label">标签（0～8 个，单个 ≤20 字符，回车/点“添加”追加，点 × 删除）
+            <div class="tag-input-row">
+              <input id="tagInput" type="text" maxlength="20" placeholder="如：骑马钉 / A4 / 待复核" />
+              <button id="tagAddBtn" type="button">添加</button>
+              <button id="tagClearBtn" type="button" class="danger-link">清除全部标签</button>
+            </div>
+          </label>
+          <div id="tagChips" class="tag-chips"></div>
+          <div id="tagCountHint" class="hint">0 / 8 个标签</div>
+          <label>备注（≤500 字符）
+            <textarea id="planNote" rows="2" maxlength="500" placeholder="该折帖的备注：工艺、客户、复核状态等"></textarea>
+          </label>
+        </div>
         <div class="row wrap">
           <button id="saveBtn" class="primary">保存到服务器</button>
           <button id="exportBtn">导出 JSON</button>
@@ -66,6 +80,21 @@
         <div class="row">
           <button id="loadListBtn">已存方案…</button>
           <button id="deletePlanBtn" class="danger" hidden>删除当前存档</button>
+        </div>
+        <div id="planFilter" class="plan-filter" hidden>
+          <div class="plan-filter-row">
+            <input id="filterTags" type="text" placeholder="标签交集，逗号分隔，如：骑马钉,A4" />
+            <input id="filterQ" type="text" placeholder="名称关键词" />
+            <select id="filterSince">
+              <option value="">全部时间</option>
+              <option value="86400000">最近 1 天</option>
+              <option value="604800000">最近 7 天</option>
+              <option value="2592000000">最近 30 天</option>
+            </select>
+            <button id="filterApplyBtn" type="button" class="primary">筛选</button>
+            <button id="filterResetBtn" type="button">清除筛选</button>
+          </div>
+          <div id="planFilterMsg" class="hint"></div>
         </div>
         <ul id="planList" class="plan-list" hidden></ul>
         <div id="saveMsg" class="hint"></div>

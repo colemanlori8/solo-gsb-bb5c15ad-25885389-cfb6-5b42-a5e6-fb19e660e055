@@ -18,8 +18,10 @@ function makeEl(id) {
     width: 0, height: 0,
     addEventListener(t, fn) { (listeners[t] = listeners[t] || []).push(fn); },
     dispatch(t, ev = {}) { (listeners[t] || []).forEach((fn) => fn(ev)); },
-    click() {},
-    appendChild() {}, append() {}, querySelector() { return makeEl('q'); },
+    click() {}, focus() {},
+    __children: [],
+    appendChild(c) { el.__children.push(c); }, append(...cs) { el.__children.push(...cs); },
+    querySelector() { return makeEl('q'); },
     querySelectorAll() { return []; },
     removeAttribute() {}, setAttribute() {},
     options: [],
@@ -42,7 +44,7 @@ function makeEl(id) {
   let html = '';
   Object.defineProperty(el, 'innerHTML', {
     get() { return html; },
-    set(v) { html = String(v); el.textContent = html.replace(/<[^>]*>/g, ''); }
+    set(v) { html = String(v); el.textContent = html.replace(/<[^>]*>/g, ''); el.__children = []; }
   });
   return el;
 }
@@ -53,6 +55,9 @@ const ids = ['rowsInput', 'colsInput', 'createGridBtn', 'axisSelect', 'lineSelec
   'stepSlider', 'stepLabel', 'statusBadge', 'board', 'canvasHint', 'stepList',
   'delStepBtn', 'clearStepsBtn', 'orientInfo', 'sequenceBox', 'foldState',
   'cellEditor', 'editorOrigin', 'editorRows', 'editorCancel', 'editorOk', 'planName',
+  'tagInput', 'tagAddBtn', 'tagClearBtn', 'tagChips', 'tagCountHint', 'planNote',
+  'planFilter', 'filterTags', 'filterQ', 'filterSince', 'filterApplyBtn',
+  'filterResetBtn', 'planFilterMsg',
   'imposeStart', 'imposeCount', 'imposePreviewBtn', 'imposeStatus', 'imposePreview',
   'imposeSummary', 'imposeOverwrite', 'imposeRows', 'imposeCancelBtn', 'imposeConfirmBtn',
   'pathCell', 'pathFace', 'pathSearchBtn', 'pathStatus', 'pathResults',
@@ -80,6 +85,31 @@ const foldBtns = ['l', 'r', 'u', 'd'].map((dir) => {
   return b;
 });
 
+// 存档存储桩：记录 POST 载荷与列表筛选查询，供标签/筛选流程断言
+const planStore = new Map();
+const fetchCalls = [];
+function makeJsonResponse(obj, status = 200) {
+  return { status, ok: status >= 200 && status < 300, json: async () => obj };
+}
+async function stubFetch(url, opts = {}) {
+  fetchCalls.push({ url, method: opts.method || 'GET', body: opts.body ? JSON.parse(opts.body) : null });
+  if (url === '/api/plans' && (opts.method || 'GET') === 'POST') {
+    const body = JSON.parse(opts.body);
+    planStore.set(body.id || 'auto-' + planStore.size, body);
+    return makeJsonResponse({ ok: true, id: body.id || 'id1', plan: body });
+  }
+  if (url.startsWith('/api/plans') && (opts.method || 'GET') === 'GET') {
+    const qIndex = url.indexOf('?');
+    const params = new URLSearchParams(qIndex >= 0 ? url.slice(qIndex + 1) : '');
+    const items = [...planStore.entries()].map(([id, p]) => ({
+      id, name: p.name, rows: p.rows, cols: p.cols, steps: p.steps.length,
+      tags: p.tags || [], note: p.note || '', updatedAt: '2026-09-22T00:00:00.000Z'
+    }));
+    return makeJsonResponse({ total: items.length, matched: items.length, items, allTags: [] });
+  }
+  return { json: async () => ({ ok: false }) };
+}
+
 const win = { devicePixelRatio: 1, addEventListener() {} };
 const sandbox = {
   console,
@@ -89,11 +119,12 @@ const sandbox = {
     querySelectorAll: (sel) => sel === 'button.fold' ? foldBtns : [],
     createElement: () => makeEl('dyn')
   },
-  fetch: async () => ({ json: async () => ({ ok: false }) }),
+  fetch: stubFetch,
   Blob: class {}, URL: { createObjectURL: () => 'blob:x', revokeObjectURL() {} },
   FileReader: class { readAsText() {} },
   alert() {}, confirm() { return false; },
-  setTimeout, clearInterval, setInterval: () => 1
+  setTimeout, clearInterval, setInterval: () => 1,
+  URLSearchParams, Date
 };
 vm.createContext(sandbox);
 // foldEngine 通过 window.FoldEngine 暴露；让 window 也成为全局对象的一部分
@@ -615,4 +646,106 @@ assert.equal(els.creepThickness.value, '0.25');
 assert.equal(els.creepBleed.value, '2.5');
 assert.equal(ui.plan.creepCompensation.faces['1,0'].front, 0.25);
 
-console.log('前端冒烟流程全部通过');
+// ---------- 标签与备注 ----------
+// 新建网格会清空标签与备注
+els.rowsInput.value = '1'; els.colsInput.value = '2';
+els.createGridBtn.dispatch('click');
+ui.requestStep({ axis: 'v', line: 1, dir: 'r' });
+assert.deepEqual(ui.plan.tags, []);
+assert.equal(els.planNote.value, '');
+assert.equal(els.tagCountHint.textContent, '0 / 8 个标签');
+
+// 添加标签：trim 规范化；重复项被拒；chip 渲染到标签区
+assert.equal(ui.addTag(' 骑马钉 '), true);
+assert.equal(ui.plan.tags[0], '骑马钉');
+assert.equal(ui.addTag('骑马钉'), false, '规范化后重复标签应被拒');
+assert.equal(ui.addTag('A4'), true);
+assert.equal(els.tagCountHint.textContent, '2 / 8 个标签');
+assert.equal(els.tagChips.__children.length, 2);
+
+// 非法标签：空、超长、含分隔符 / 控制字符一律拒绝
+assert.equal(ui.addTag('   '), false);
+assert.equal(ui.addTag('a'.repeat(21)), false);
+assert.equal(ui.addTag('a,b'), false);
+assert.equal(ui.addTag('x|y'), false);
+
+// 输入框 + 按钮添加路径
+els.tagInput.value = '待复核';
+els.tagAddBtn.dispatch('click');
+assert.deepEqual(ui.plan.tags, ['骑马钉', 'A4', '待复核']);
+assert.equal(els.tagInput.value, '', '添加成功后输入框清空');
+
+// 删除单个标签、清除全部
+ui.removeTag('A4');
+assert.deepEqual(ui.plan.tags, ['骑马钉', '待复核']);
+els.tagClearBtn.dispatch('click');
+assert.deepEqual(ui.plan.tags, []);
+
+// 超过 8 个标签被拒
+for (let i = 0; i < 8; i++) ui.addTag('标签' + i);
+assert.equal(ui.plan.tags.length, 8);
+assert.equal(ui.addTag('第9个'), false);
+assert.ok(/最多 8 个标签/.test(els.saveMsg.textContent));
+
+// 保存载荷含标签与备注；严格元信息校验在本地拦截非法请求（不发出请求）
+els.planNote.value = '用于首件确认';
+ui.plan.name = '标签冒烟方案';
+const payload = ui.planPayload();
+assert.deepEqual(payload.tags, ['标签0', '标签1', '标签2', '标签3', '标签4', '标签5', '标签6', '标签7']);
+assert.equal(payload.note, '用于首件确认');
+
+const callsBefore = fetchCalls.length;
+ui.plan.tags.push('a,b');
+els.saveBtn.dispatch('click');
+assert.equal(fetchCalls.length, callsBefore, '非法标签不得发出保存请求');
+assert.ok(/保存被拒绝/.test(els.saveMsg.textContent));
+ui.plan.tags.pop();
+
+// 备注超长同样本地拒绝
+els.planNote.value = 'x'.repeat(501);
+els.saveBtn.dispatch('click');
+assert.equal(fetchCalls.length, callsBefore, '备注超长不得发出保存请求');
+els.planNote.value = '用于首件确认';
+
+// 合法保存：请求体带规范化标签与规范化标签与备注
+els.planList.hidden = true;   // 避免保存成功后自动刷新列表干扰 fetch 记录断言
+els.saveBtn.dispatch('click');
+(async () => {
+  await new Promise((r) => setTimeout(r, 0));
+  const saveCall = fetchCalls[fetchCalls.length - 1];
+  assert.equal(saveCall.method, 'POST');
+  assert.deepEqual(saveCall.body.tags, payload.tags);
+  assert.equal(saveCall.body.note, '用于首件确认');
+
+  // 载入存档：标签与备注回填
+  ui.applyPlan({
+    name: '标签载入', rows: 1, cols: 2, labels: {},
+    steps: [{ axis: 'v', line: 1, dir: 'r' }],
+    tags: ['骑马钉', ' A4 ', '骑马钉', ''], note: '  复核备注  '
+  }, 'id-tags');
+  assert.deepEqual(ui.plan.tags, ['骑马钉', 'A4'], '导入路径对标签做宽容规整去重');
+  assert.equal(els.planNote.value, '复核备注');
+  assert.equal(els.tagCountHint.textContent, '2 / 8 个标签');
+
+  // 列表筛选：设置条件后拉取，请求 query 含标签交集 / 关键词 / since
+  els.filterTags.value = '骑马钉,A4';
+  els.filterQ.value = '骑马';
+  els.filterSince.value = '86400000';
+  els.filterApplyBtn.dispatch('click');
+  await new Promise((r) => setTimeout(r, 0));
+  const listCall = fetchCalls[fetchCalls.length - 1];
+  assert.match(listCall.url, /tags=/);
+  assert.match(listCall.url, /q=/);
+  assert.match(listCall.url, /since=/);
+  assert.equal(els.planFilter.hidden, false);
+  assert.ok(/筛选命中/.test(els.planFilterMsg.textContent));
+
+  // 清除筛选：再次拉取不带 query
+  els.filterResetBtn.dispatch('click');
+  await new Promise((r) => setTimeout(r, 0));
+  const resetCall = fetchCalls[fetchCalls.length - 1];
+  assert.equal(resetCall.url, '/api/plans');
+  assert.deepEqual(ui.listFilter, { tags: '', q: '', since: '' });
+
+  console.log('前端冒烟流程全部通过');
+})();

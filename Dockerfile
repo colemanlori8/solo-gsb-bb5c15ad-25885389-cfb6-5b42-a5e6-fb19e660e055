@@ -15,6 +15,10 @@ COPY entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh \
   && mkdir -p /app/data
 
+# 标签 / 备注 / 列表筛选：
+#  - 方案与标签/备注持久化在命名卷 DATA_DIR（/app/data），容器重建不丢失；
+#  - 写入走临时文件 + rename 原子替换，并发或失败时不会出现半截存档；
+#  - 存档列表筛选（标签交集 / 名称关键词 / since）均为只读查询，不产生额外文件。
 ENV NODE_ENV=production \
     PORT=3000 \
     DATA_DIR=/app/data

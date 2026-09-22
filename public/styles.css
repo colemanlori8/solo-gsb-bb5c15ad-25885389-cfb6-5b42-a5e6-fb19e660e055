@@ -179,10 +179,60 @@ button.fold { flex: 1 1 40%; min-width: 110px; font-weight: 600; }
 .seq-page .small { display: block; font-size: 10px; font-weight: 400; color: var(--muted); }
 .seq-arrow { align-self: center; color: var(--muted); }
 
-.plan-list { list-style: none; margin: 6px 0 0; padding: 0; max-height: 160px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; }
+.plan-list { list-style: none; margin: 6px 0 0; padding: 0; max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; }
 .plan-list li { display: flex; justify-content: space-between; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: 12px; }
 .plan-list li:last-child { border-bottom: none; }
 .plan-list button { padding: 2px 8px; font-size: 12px; }
+
+/* ---------- 标签 / 备注编辑 ---------- */
+.meta-edit { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.meta-edit label { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
+.meta-tags-label { gap: 4px; }
+.tag-input-row { display: flex; gap: 6px; align-items: center; }
+.tag-input-row input { flex: 1; min-width: 0; }
+.danger-link {
+  background: none; border: none; color: var(--danger); cursor: pointer;
+  font-size: 12px; padding: 2px 4px;
+}
+.danger-link:hover { text-decoration: underline; }
+.meta-edit textarea {
+  width: 100%; resize: vertical; font: inherit; font-size: 12px;
+  padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px;
+}
+.tag-chips { display: flex; flex-wrap: wrap; gap: 4px; min-height: 22px; }
+.tag-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: #eaf1fe; border: 1px solid #b9cdfb; color: #1e4fa8;
+  border-radius: 999px; padding: 1px 4px 1px 9px; font-size: 12px; line-height: 1.6;
+}
+.tag-chip-x {
+  border: none; background: none; color: #1e4fa8; cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 0 3px; border-radius: 50%;
+}
+.tag-chip-x:hover { background: #c5d8fb; }
+.tag-empty { font-size: 12px; }
+
+/* ---------- 存档列表筛选 ---------- */
+.plan-filter { margin: 6px 0; border-top: 1px dashed var(--line); padding-top: 6px; }
+.plan-filter-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.plan-filter-row input, .plan-filter-row select { font-size: 12px; padding: 4px 8px; }
+.plan-filter-row input { flex: 1; min-width: 110px; }
+.plan-filter-row button { padding: 4px 10px; font-size: 12px; }
+
+.plan-list-item { align-items: flex-start; }
+.plan-item-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.plan-item-info { color: var(--ink); }
+.plan-item-meta { font-size: 11px; }
+.plan-item-tags { display: flex; flex-wrap: wrap; gap: 3px; }
+.tag-chip-link {
+  border: 1px solid #b9cdfb; background: #f2f6ff; cursor: pointer;
+  border-radius: 999px; padding: 0 8px; font-size: 11px; color: #1e4fa8;
+}
+.tag-chip-link:hover { background: #dbe7ff; }
+.plan-item-note {
+  font-size: 11px; line-height: 1.5;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+}
 
 /* ---------- 弹层 ---------- */
 .modal {

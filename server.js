@@ -16,6 +16,10 @@ const E = require('./public/foldEngine.js');
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 
+// ---------- 方案标签 / 备注约束（与浏览器共用 foldEngine 中的严格规整） ----------
+const { MAX_TAGS, MAX_TAG_LEN, MAX_NOTE_LEN, MAX_NAME_LEN } = E.META_LIMITS;
+const TAG_FORBIDDEN_RE = /[\p{C},;|]/u;
+
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const app = express();
@@ -223,38 +227,166 @@ app.post('/api/creep-compensation', (req, res) => {
 // ---------- 方案持久化 ----------
 function planFile(id) { return path.join(DATA_DIR, `${id}.json`); }
 
-app.get('/api/plans', (_req, res) => {
-  const items = fs.readdirSync(DATA_DIR)
+/**
+ * 方案元信息严格校验：直接委托浏览器/服务端共用的 E.normalizePlanMeta，
+ * 错误带 code（bad_name/name_too_long/bad_tags/tag_too_long/tag_forbidden/
+ * too_many_tags/bad_note/note_too_long），由 POST 处理器整请求拒绝。
+ */
+function normalizePlanMeta(body) {
+  try {
+    return E.normalizePlanMeta(body);
+  } catch (e) {
+    if (e instanceof E.MetaError) {
+      const err = new Error(e.message);
+      err.code = e.code;
+      throw err;
+    }
+    throw e;
+  }
+}
+
+/** 解析标签交集查询参数：英文逗号（或分号）分隔，逐项 trim，空项/重复忽略；非法项抛错。 */
+function parseTagFilter(raw) {
+  if (raw == null || raw === '') return [];
+  if (typeof raw !== 'string') throw badFilter('标签筛选参数格式非法。');
+  const out = [];
+  const seen = new Set();
+  for (let part of raw.split(/[,;]/)) {
+    part = part.trim();
+    if (!part) continue;
+    if ([...part].length > MAX_TAG_LEN || TAG_FORBIDDEN_RE.test(part)) {
+      throw badFilter(`筛选标签非法：“${part}”。`);
+    }
+    if (!seen.has(part)) { seen.add(part); out.push(part); }
+  }
+  return out;
+}
+
+function badFilter(message) {
+  const err = new Error(message);
+  err.code = 'bad_tag_filter';
+  return err;
+}
+
+/** 读取全部存档摘要（含标签/备注/时间戳）；损坏文件跳过。 */
+function readAllPlans() {
+  return fs.readdirSync(DATA_DIR)
     .filter((f) => f.endsWith('.json'))
     .map((f) => {
       try {
-        const p = JSON.parse(fs.readFileSync(path.join(DATA_DIR, f), 'utf8'));
-        const st = fs.statSync(path.join(DATA_DIR, f));
-        return { id: f.replace(/\.json$/, ''), name: p.name || '未命名方案', rows: p.rows, cols: p.cols, steps: (p.steps || []).length, savedAt: st.mtimeMs };
+        const filePath = path.join(DATA_DIR, f);
+        const p = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        const st = fs.statSync(filePath);
+        const id = f.replace(/\.json$/, '');
+        const updatedAt = typeof p.updatedAt === 'string' ? p.updatedAt : new Date(st.mtimeMs).toISOString();
+        return {
+          id,
+          name: p.name || '未命名方案',
+          rows: p.rows, cols: p.cols,
+          steps: Array.isArray(p.steps) ? p.steps.length : 0,
+          tags: Array.isArray(p.tags) ? p.tags : [],
+          note: typeof p.note === 'string' ? p.note : '',
+          createdAt: typeof p.createdAt === 'string' ? p.createdAt : updatedAt,
+          updatedAt
+        };
       } catch { return null; }
     })
-    .filter(Boolean)
-    .sort((a, b) => b.savedAt - a.savedAt);
-  res.json(items);
+    .filter(Boolean);
+}
+
+/**
+ * GET /api/plans：方案存档列表，支持
+ *  - tags：标签交集（英文逗号/分号分隔，须全部命中）
+ *  - q：名称关键词（大小写不敏感子串）
+ *  - since：仅返回该时间（ISO 字符串或毫秒数）之后更新的存档
+ * 返回 { total, matched, items, allTags }；排序为更新时间倒序，同时间按 id 升序（稳定）。
+ */
+app.get('/api/plans', (req, res) => {
+  let tagFilter, q, since;
+  try {
+    // express 默认 qs 查询解析会把纯数字值解析成 number，统一转字符串处理
+    const tagsRaw = req.query.tags == null ? '' : String(req.query.tags);
+    const sinceRaw = req.query.since == null ? '' : String(req.query.since);
+    tagFilter = parseTagFilter(tagsRaw);
+    q = typeof req.query.q === 'string' ? req.query.q.trim() : String(req.query.q || '').trim();
+    if (sinceRaw !== '') {
+      const n = Number(sinceRaw);
+      since = Number.isFinite(n) ? new Date(n) : new Date(sinceRaw);
+      if (isNaN(since.getTime())) {
+        return res.status(400).json({
+          ok: false, error: { code: 'bad_since', message: 'since 必须为合法时间（ISO 字符串或毫秒数）。' }
+        });
+      }
+    }
+  } catch (e) {
+    return res.status(400).json({ ok: false, error: { code: e.code || 'bad_filter', message: e.message } });
+  }
+
+  const all = readAllPlans();
+  const total = all.length;
+
+  // 全部存档的标签聚合（不受筛选影响）：按出现次数倒序、同次数按标签升序
+  const tagCounts = new Map();
+  for (const it of all) for (const t of it.tags) tagCounts.set(t, (tagCounts.get(t) || 0) + 1);
+  const allTags = [...tagCounts.entries()]
+    .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .map(([tag, count]) => ({ tag, count }));
+
+  const ql = q.toLowerCase();
+  const sinceMs = since ? since.getTime() : null;
+  const items = all
+    .filter((it) => tagFilter.every((t) => it.tags.includes(t)))
+    .filter((it) => !ql || it.name.toLowerCase().includes(ql))
+    .filter((it) => sinceMs == null || new Date(it.updatedAt).getTime() >= sinceMs)
+    .sort((a, b) => {
+      const dt = new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+      return dt !== 0 ? dt : (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    });
+
+  res.json({ total, matched: items.length, items, allTags });
 });
 
 app.post('/api/plans', (req, res) => {
+  // 先完成全部校验，再触碰文件系统：非法请求绝不改动任何已有存档
+  let plan, meta;
   try {
-    const plan = E.normalizePlan(req.body || {});
-    const body = {
-      name: plan.name, rows: plan.rows, cols: plan.cols,
-      labels: plan.labels, steps: plan.steps,
-      savedAt: new Date().toISOString()
-    };
-    // 爬移补偿独立方案字段：存在则随存档保留（GET /api/plans/:id 原样返回）
-    if (plan.creepCompensation) body.creepCompensation = plan.creepCompensation;
-    let id = (req.body && typeof req.body.id === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(req.body.id))
-      ? req.body.id : crypto.randomBytes(6).toString('hex');
-    fs.writeFileSync(planFile(id), JSON.stringify(body, null, 2));
-    res.json({ ok: true, id, plan: body });
+    plan = E.normalizePlan(req.body || {});
   } catch (e) {
-    res.status(400).json({ ok: false, error: { code: 'bad_plan', message: e.message } });
+    return res.status(400).json({ ok: false, error: { code: 'bad_plan', message: e.message } });
   }
+  try {
+    meta = normalizePlanMeta(req.body || {});
+  } catch (e) {
+    return res.status(400).json({ ok: false, error: { code: e.code, message: e.message } });
+  }
+
+  const id = (req.body && typeof req.body.id === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(req.body.id))
+    ? req.body.id : crypto.randomBytes(6).toString('hex');
+  const now = new Date().toISOString();
+  const existingPath = planFile(id);
+  let createdAt = now;
+  if (fs.existsSync(existingPath)) {
+    try {
+      const old = JSON.parse(fs.readFileSync(existingPath, 'utf8'));
+      if (typeof old.createdAt === 'string') createdAt = old.createdAt;
+    } catch { /* 损坏旧档：以新时间为准 */ }
+  }
+
+  const body = {
+    name: meta.name, rows: plan.rows, cols: plan.cols,
+    labels: plan.labels, steps: plan.steps,
+    tags: meta.tags, note: meta.note,
+    createdAt, updatedAt: now,
+    savedAt: now
+  };
+  // 爬移补偿独立方案字段：存在则随存档保留（GET /api/plans/:id 原样返回）
+  if (plan.creepCompensation) body.creepCompensation = plan.creepCompensation;
+
+  // 原子写入：先写临时文件（非 .json 名，不会被列表扫描读到）再 rename，失败不会留下半截存档
+  const tmp = path.join(DATA_DIR, `.${id}.json.tmp-${process.pid}-${Date.now()}`);
+  fs.writeFileSync(tmp, JSON.stringify(body, null, 2));
+  fs.renameSync(tmp, existingPath);
+  res.json({ ok: true, id, plan: body });
 });
 
 app.get('/api/plans/:id', (req, res) => {
@@ -280,3 +412,6 @@ if (require.main === module) {
 }
 
 module.exports = app;
+module.exports.normalizePlanMeta = normalizePlanMeta;
+module.exports.parseTagFilter = parseTagFilter;
+module.exports.limits = { MAX_TAGS, MAX_TAG_LEN, MAX_NOTE_LEN, MAX_NAME_LEN };

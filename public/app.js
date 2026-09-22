@@ -7,7 +7,7 @@ const PAD = 64;
 
 // ---------- 应用状态 ----------
 const app = {
-  plan: { name: '未命名方案', rows: 0, cols: 0, labels: {}, steps: [] },
+  plan: { name: '未命名方案', rows: 0, cols: 0, labels: {}, steps: [], tags: [], note: '' },
   upto: 0,                  // 当前回放到第几步
   replay: null,             // { state, error }
   loadedId: null,
@@ -21,7 +21,8 @@ const app = {
   track: { result: null, gridKey: null, target: null },  // 面片轨迹
   duplex: { eligible: null, open: false, flip: 'long', result: null, sig: null },  // 双面印刷版
   audit: { result: null },                  // 生产质量审计（只读，随方案变化自动重算）
-  creep: { eligible: null, result: null }   // 书帖爬移补偿（实时重算，应用后写入独立字段）
+  creep: { eligible: null, result: null },  // 书帖爬移补偿（实时重算，应用后写入独立字段）
+  listFilter: { tags: '', q: '', since: '' }   // 存档列表当前筛选条件
 };
 
 const $ = (id) => document.getElementById(id);
@@ -54,6 +55,28 @@ function init() {
   $('importFile').addEventListener('change', importPlan);
   $('loadListBtn').addEventListener('click', loadList);
   $('deletePlanBtn').addEventListener('click', deleteLoaded);
+
+  // 标签编辑 / 存档列表筛选
+  $('tagAddBtn').addEventListener('click', addTagFromInput);
+  $('tagClearBtn').addEventListener('click', clearTags);
+  $('tagInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); addTagFromInput(); }
+  });
+  $('filterApplyBtn').addEventListener('click', () => {
+    app.listFilter = {
+      tags: $('filterTags').value.trim(),
+      q: $('filterQ').value.trim(),
+      since: $('filterSince').value
+    };
+    loadList();
+  });
+  $('filterResetBtn').addEventListener('click', () => {
+    $('filterTags').value = '';
+    $('filterQ').value = '';
+    $('filterSince').value = '';
+    app.listFilter = { tags: '', q: '', since: '' };
+    loadList();
+  });
 
   $('editorCancel').addEventListener('click', () => $('cellEditor').hidden = true);
   $('editorOk').addEventListener('click', commitEditor);
@@ -94,6 +117,7 @@ function init() {
   canvas.addEventListener('mousemove', onCanvasMove);
   canvas.addEventListener('mouseleave', () => { app.hoverHandle = null; draw(); });
   $('planName').addEventListener('input', (e) => { app.plan.name = e.target.value; });
+  $('planNote').addEventListener('input', (e) => { app.plan.note = e.target.value; });
 
   // 默认演示网格
   createGrid();
@@ -103,7 +127,12 @@ function init() {
 function createGrid() {
   const rows = clampInt($('rowsInput').value, 1, 12, 2);
   const cols = clampInt($('colsInput').value, 1, 12, 2);
-  app.plan = { name: $('planName').value || '未命名方案', rows, cols, labels: {}, steps: [] };
+  app.plan = {
+    name: $('planName').value || '未命名方案',
+    rows, cols, labels: {}, steps: [], tags: [], note: ''
+  };
+  $('planNote').value = '';
+  renderTagChips();
   app.loadedId = null;
   setUpto(0, true);
   refreshLineSelect();
@@ -1658,6 +1687,74 @@ function showFoldError(err) {
 }
 function clearFoldError() { $('foldError').hidden = true; }
 
+// ---------- 标签 / 备注 ----------
+/** 添加单个标签：先在前端按服务端同一份规则预校验/规范化（去重、限量、限长、禁字符）。 */
+function addTag(raw) {
+  const tag = String(raw == null ? '' : raw).trim().replace(/\s+/g, ' ');
+  if (!tag) { $('saveMsg').textContent = '标签不能为空。'; return false; }
+  if ([...tag].length > E.META_LIMITS.MAX_TAG_LEN) {
+    $('saveMsg').textContent = `单个标签最多 ${E.META_LIMITS.MAX_TAG_LEN} 字符。`;
+    return false;
+  }
+  if (/[\p{C},;|]/u.test(tag)) {
+    $('saveMsg').textContent = '标签不能包含控制字符或 , ; | 等分隔符。';
+    return false;
+  }
+  if (app.plan.tags.includes(tag)) { $('saveMsg').textContent = `标签“${tag}”已存在。`; return false; }
+  if (app.plan.tags.length >= E.META_LIMITS.MAX_TAGS) {
+    $('saveMsg').textContent = `每个方案最多 ${E.META_LIMITS.MAX_TAGS} 个标签。`;
+    return false;
+  }
+  app.plan.tags.push(tag);
+  renderTagChips();
+  return true;
+}
+
+function addTagFromInput() {
+  const input = $('tagInput');
+  if (addTag(input.value)) input.value = '';
+  input.focus();
+}
+
+function removeTag(tag) {
+  app.plan.tags = app.plan.tags.filter((t) => t !== tag);
+  renderTagChips();
+}
+
+function clearTags() {
+  if (!app.plan.tags.length) return;
+  app.plan.tags = [];
+  renderTagChips();
+  $('saveMsg').textContent = '已清除全部标签（保存方案后生效）。';
+}
+
+function renderTagChips() {
+  const box = $('tagChips');
+  box.innerHTML = '';
+  app.plan.tags.forEach((tag) => {
+    const chip = document.createElement('span');
+    chip.className = 'tag-chip';
+    const txt = document.createElement('span');
+    txt.className = 'tag-chip-name';
+    txt.textContent = tag;
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.className = 'tag-chip-x';
+    x.title = '删除该标签';
+    x.textContent = '×';
+    x.addEventListener('click', () => removeTag(tag));
+    chip.append(txt, x);
+    box.appendChild(chip);
+  });
+  if (!app.plan.tags.length) {
+    const empty = document.createElement('span');
+    empty.className = 'muted tag-empty';
+    empty.textContent = '尚无标签（可添加 0～8 个）';
+    box.appendChild(empty);
+  }
+  $('tagCountHint').textContent = `${app.plan.tags.length} / ${E.META_LIMITS.MAX_TAGS} 个标签`;
+}
+
 // ---------- 存取 ----------
 function planPayload() {
   const p = {
@@ -1665,7 +1762,9 @@ function planPayload() {
     rows: app.plan.rows,
     cols: app.plan.cols,
     labels: app.plan.labels,
-    steps: app.plan.steps
+    steps: app.plan.steps,
+    tags: app.plan.tags,
+    note: $('planNote').value
   };
   // 爬移补偿独立方案字段：应用后随保存/导出保留
   if (app.plan.creepCompensation) p.creepCompensation = app.plan.creepCompensation;
@@ -1679,6 +1778,8 @@ function applyPlan(plan, id) {
   $('planName').value = p.name;
   $('rowsInput').value = p.rows;
   $('colsInput').value = p.cols;
+  $('planNote').value = p.note || '';
+  renderTagChips();
   // 载入已应用的爬移补偿方案：回填参数输入框（逐面偏移在独立字段中保留）
   if (p.creepCompensation && p.creepCompensation.params) {
     $('creepThickness').value = p.creepCompensation.params.paperThickness;
@@ -1692,6 +1793,13 @@ function applyPlan(plan, id) {
 
 async function savePlan() {
   if (!app.plan.rows) { $('saveMsg').textContent = '请先创建网格。'; return; }
+  // 与服务端同一份严格校验：非法标签/过长输入在本地即被拦下，请求也不会改动旧存档
+  try {
+    E.normalizePlanMeta(planPayload());
+  } catch (e) {
+    $('saveMsg').textContent = '保存被拒绝：' + e.message;
+    return;
+  }
   try {
     const resp = await fetch('/api/plans', {
       method: 'POST',
@@ -1701,8 +1809,11 @@ async function savePlan() {
     const data = await resp.json();
     if (!data.ok) throw new Error(data.error.message);
     app.loadedId = data.id;
+    app.plan.tags = data.plan.tags;
     $('deletePlanBtn').hidden = false;
     $('saveMsg').textContent = `已保存：${data.id}（${new Date().toLocaleTimeString()}）`;
+    // 列表若处于打开状态则自动刷新（沿用当前筛选）
+    if (!$('planList').hidden) loadList();
   } catch (e) {
     $('saveMsg').textContent = '保存失败：' + e.message;
   }
@@ -1733,34 +1844,88 @@ function importPlan(e) {
   e.target.value = '';
 }
 
+/** 按当前筛选条件拉取存档列表（标签交集 / 名称关键词 / 最近更新时间）。 */
 async function loadList() {
   const ul = $('planList');
   ul.hidden = false;
+  $('planFilter').hidden = false;
   ul.innerHTML = '<li class="muted">加载中…</li>';
-  try {
-    const resp = await fetch('/api/plans');
-    const items = await resp.json();
-    ul.innerHTML = '';
-    if (!items.length) {
-      ul.innerHTML = '<li class="muted">服务器上还没有存档</li>';
-      return;
-    }
-    items.forEach((it) => {
-      const li = document.createElement('li');
-      const info = document.createElement('span');
-      info.textContent = `${it.name}（${it.rows}×${it.cols}，${it.steps} 步）`;
-      const btn = document.createElement('button');
-      btn.textContent = '载入';
-      btn.addEventListener('click', async () => {
-        const r = await fetch(`/api/plans/${it.id}`);
-        applyPlan(await r.json(), it.id);
-      });
-      li.append(info, btn);
-      ul.appendChild(li);
-    });
-  } catch (e) {
-    ul.innerHTML = `<li class="muted">读取失败：${e.message}</li>`;
+  const params = new URLSearchParams();
+  if (app.listFilter.tags) params.set('tags', app.listFilter.tags);
+  if (app.listFilter.q) params.set('q', app.listFilter.q);
+  if (app.listFilter.since) {
+    params.set('since', String(Date.now() - Number(app.listFilter.since)));
   }
+  const qs = params.toString();
+  try {
+    const resp = await fetch('/api/plans' + (qs ? `?${qs}` : ''));
+    const data = await resp.json();
+    if (!resp.ok) throw new Error((data.error && data.error.message) || `HTTP ${resp.status}`);
+    renderPlanList(data);
+  } catch (e) {
+    ul.innerHTML = `<li class="muted">读取失败：${escapeHtml(e.message)}</li>`;
+  }
+}
+
+function renderPlanList(data) {
+  const ul = $('planList');
+  ul.innerHTML = '';
+  const filtering = app.listFilter.tags || app.listFilter.q || app.listFilter.since;
+  $('planFilterMsg').textContent = filtering
+    ? `筛选命中 ${data.matched} / ${data.total} 个存档（按最近更新时间排序）`
+    : `共 ${data.total} 个存档（按最近更新时间排序）`;
+  if (!data.items.length) {
+    ul.innerHTML = `<li class="muted">${filtering ? '没有符合筛选条件的存档' : '服务器上还没有存档'}</li>`;
+    return;
+  }
+  data.items.forEach((it) => {
+    const li = document.createElement('li');
+    li.className = 'plan-list-item';
+
+    const main = document.createElement('div');
+    main.className = 'plan-item-main';
+    const info = document.createElement('div');
+    info.className = 'plan-item-info';
+    info.textContent = `${it.name}（${it.rows}×${it.cols}，${it.steps} 步）`;
+    const meta = document.createElement('div');
+    meta.className = 'plan-item-meta muted';
+    meta.textContent = `更新于 ${new Date(it.updatedAt).toLocaleString()}`;
+
+    const tagBox = document.createElement('div');
+    tagBox.className = 'plan-item-tags';
+    (it.tags || []).forEach((tag) => {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'tag-chip tag-chip-link';
+      chip.title = `按标签“${tag}”筛选`;
+      chip.textContent = '#' + tag;
+      chip.addEventListener('click', () => {
+        const cur = $('filterTags').value.split(',').map((s) => s.trim()).filter(Boolean);
+        if (!cur.includes(tag)) cur.push(tag);
+        $('filterTags').value = cur.join(',');
+        $('filterApplyBtn').click();
+      });
+      tagBox.appendChild(chip);
+    });
+    if (it.note) {
+      const note = document.createElement('div');
+      note.className = 'plan-item-note muted';
+      note.textContent = it.note;
+      note.title = it.note;
+      main.append(info, tagBox, note, meta);
+    } else {
+      main.append(info, tagBox, meta);
+    }
+
+    const btn = document.createElement('button');
+    btn.textContent = '载入';
+    btn.addEventListener('click', async () => {
+      const r = await fetch(`/api/plans/${it.id}`);
+      applyPlan(await r.json(), it.id);
+    });
+    li.append(main, btn);
+    ul.appendChild(li);
+  });
 }
 
 async function deleteLoaded() {
@@ -1770,6 +1935,7 @@ async function deleteLoaded() {
   app.loadedId = null;
   $('deletePlanBtn').hidden = true;
   $('saveMsg').textContent = '已删除存档（本地方案仍保留）';
+  if (!$('planList').hidden) loadList();
 }
 
 init();
@@ -1779,6 +1945,8 @@ if (typeof window !== 'undefined') {
   window.__foldApp = Object.assign(app, {
     requestStep, setUpto, createGrid, render, getFoldError: () => $('foldError'),
     applyPlan, planPayload,
+    addTag, removeTag, clearTags, renderTagChips,
+    loadList, renderPlanList,
     previewImposition, confirmImposition, closeImposition, renderImposition,
     readImposeInputs, runPathfind, doPathfindSearch, appendPathSolution, renderPathfind,
     renderTrack, refreshTrackCells, jumpTrackPoint, currentTrackInfo,

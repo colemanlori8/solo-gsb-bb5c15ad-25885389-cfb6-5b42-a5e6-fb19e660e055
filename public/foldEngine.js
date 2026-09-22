@@ -1230,6 +1230,95 @@ function auditPlan(rows, cols, labels, steps) {
   };
 }
 
+/**
+ * 方案元信息（名称 / 标签 / 备注）约束与严格校验（浏览器与服务端共用）。
+ * tags：0..8 个，逐项 trim、折叠空白、去重、长度 1..20，
+ *       不得含控制字符与查询分隔符（, ; |）；
+ * note：trim 后至多 500 字符；name：trim 后 1..40 字符。
+ * 非法时抛出带 code 的错误（bad_name/name_too_long/bad_tags/tag_too_long/
+ * too_many_tags/bad_note/note_too_long），由调用方整请求拒绝。
+ */
+const META_LIMITS = Object.freeze({
+  MAX_TAGS: 8, MAX_TAG_LEN: 20, MAX_NOTE_LEN: 500, MAX_NAME_LEN: 40
+});
+const TAG_FORBIDDEN_RE = /[\p{C},;|]/u;
+
+class MetaError extends Error {
+  constructor(code, message) { super(message); this.name = 'MetaError'; this.code = code; }
+}
+
+function strLen(s) { return [...String(s)].length; }
+
+function normalizePlanMeta(body) {
+  body = body || {};
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  if (!name) throw new MetaError('bad_name', '方案名称不能为空。');
+  if (strLen(name) > META_LIMITS.MAX_NAME_LEN) {
+    throw new MetaError('name_too_long', `方案名称最多 ${META_LIMITS.MAX_NAME_LEN} 字符。`);
+  }
+
+  const rawTags = body.tags === undefined ? [] : body.tags;
+  if (!Array.isArray(rawTags)) throw new MetaError('bad_tags', '标签必须为数组。');
+  const tags = [];
+  const seen = new Set();
+  for (const raw of rawTags) {
+    if (typeof raw !== 'string') throw new MetaError('bad_tags', '每个标签必须为字符串。');
+    const tag = raw.trim().replace(/\s+/g, ' ');
+    if (!tag) throw new MetaError('bad_tags', '标签不能为空。');
+    if (strLen(tag) > META_LIMITS.MAX_TAG_LEN) {
+      throw new MetaError('tag_too_long', `单个标签最多 ${META_LIMITS.MAX_TAG_LEN} 字符：“${tag}”。`);
+    }
+    if (TAG_FORBIDDEN_RE.test(tag)) {
+      throw new MetaError('tag_forbidden', `标签含非法字符（控制字符或 , ; |）：“${tag}”。`);
+    }
+    if (!seen.has(tag)) { seen.add(tag); tags.push(tag); }
+  }
+  if (tags.length > META_LIMITS.MAX_TAGS) {
+    throw new MetaError('too_many_tags',
+      `每个方案最多 ${META_LIMITS.MAX_TAGS} 个标签（去重后 ${tags.length} 个）。`);
+  }
+
+  let note = '';
+  if (body.note !== undefined && body.note !== null) {
+    if (typeof body.note !== 'string') throw new MetaError('bad_note', '备注必须为字符串。');
+    note = body.note.trim();
+    if (strLen(note) > META_LIMITS.MAX_NOTE_LEN) {
+      throw new MetaError('note_too_long',
+        `备注最多 ${META_LIMITS.MAX_NOTE_LEN} 字符（当前 ${strLen(note)} 字符）。`);
+    }
+  }
+  return { name, tags, note };
+}
+
+/**
+ * 宽容版元信息规整（导入 JSON 时用）：任一字段非法都不抛错，
+ * 名称退回“未命名方案”、标签逐项过滤、超长截断、去重限量，备注超长截断。
+ */
+function coercePlanMeta(body) {
+  body = body || {};
+  let name = typeof body.name === 'string' ? body.name.trim() : '';
+  if (!name || strLen(name) > META_LIMITS.MAX_NAME_LEN) name = '未命名方案';
+
+  const tags = [];
+  const seen = new Set();
+  if (Array.isArray(body.tags)) {
+    for (const raw of body.tags) {
+      if (typeof raw !== 'string') continue;
+      const tag = raw.trim().replace(/\s+/g, ' ');
+      if (!tag || TAG_FORBIDDEN_RE.test(tag)) continue;
+      const clipped = [...tag].slice(0, META_LIMITS.MAX_TAG_LEN).join('');
+      if (!seen.has(clipped)) { seen.add(clipped); tags.push(clipped); }
+      if (tags.length >= META_LIMITS.MAX_TAGS) break;
+    }
+  }
+
+  let note = typeof body.note === 'string' ? body.note.trim() : '';
+  if (strLen(note) > META_LIMITS.MAX_NOTE_LEN) {
+    note = [...note].slice(0, META_LIMITS.MAX_NOTE_LEN).join('');
+  }
+  return { name, tags, note };
+}
+
 /** 方案校验/规整（载入 JSON 时使用） */
 function normalizePlan(plan) {
   const errors = [];
@@ -1273,6 +1362,11 @@ function normalizePlan(plan) {
     name: plan.name ? String(plan.name) : '未命名方案',
     rows, cols, labels, steps
   };
+  // 标签 / 备注为宽松规整（导入含旧版/手改 JSON 不应失败），保存时再走严格校验
+  const meta = coercePlanMeta(plan);
+  normalized.name = meta.name;
+  normalized.tags = meta.tags;
+  normalized.note = meta.note;
   // 爬移补偿为独立方案字段：结构合法则保留（随方案保存/导入/服务端载入），
   // 非法则静默丢弃，不影响方案其余部分。
   const creep = normalizeCreepScheme(plan.creepCompensation, rows, cols);
@@ -1287,7 +1381,8 @@ const api = {
   duplexEligibility, buildDuplexPlates,
   creepEligibility, creepCompensation, normalizeCreepScheme,
   findFoldPath, candidateSteps, stateKey, describeStep,
-  trackPanel, auditPlan
+  trackPanel, auditPlan,
+  normalizePlanMeta, coercePlanMeta, MetaError, META_LIMITS
 };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = api;

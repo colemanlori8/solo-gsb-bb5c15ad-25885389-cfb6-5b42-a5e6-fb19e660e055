@@ -13,8 +13,13 @@ if [ ! -d /app/node_modules ]; then
   npm install --omit=dev --no-audit --no-fund
 fi
 
-# 引擎自检（确保折叠逻辑模块可加载）
-node -e "require('./public/foldEngine.js'); console.log('[fold-proofing] 折叠引擎自检通过');"
+# 引擎自检（确保折叠逻辑模块与标签/备注规范化可加载）
+node -e "
+const E = require('./public/foldEngine.js');
+const meta = E.normalizePlanMeta({ name: '自检', tags: [' 骑马钉 ', '骑马钉'], note: ' ok ' });
+if (JSON.stringify(meta.tags) !== JSON.stringify(['骑马钉'])) throw new Error('标签规范化自检失败');
+console.log('[fold-proofing] 折叠引擎与标签规范化自检通过');
+"
 
 echo "[fold-proofing] 启动 Web 服务，端口 ${PORT:-3000} ..."
 exec node server.js
