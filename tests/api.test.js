@@ -35,6 +35,11 @@ async function post(p, body) {
   return { status: resp.status, json: await resp.json() };
 }
 
+async function get(p) {
+  const resp = await fetch(base + p);
+  return { status: resp.status, json: await resp.json() };
+}
+
 test('POST /api/impose：合法折帖返回连续页码、slots 与反向 labels', async () => {
   const { status, json } = await post('/api/impose', {
     rows: 2, cols: 2, labels: {}, steps: STEPS, startPage: 1, pageCount: 8
@@ -581,4 +586,179 @@ test('爬移补偿方案经保存/载入往返后独立字段完整保留', asyn
   assert.equal(savedBad.json.ok, true);
   const loadedBad = await (await fetch(`${base}/api/plans/${savedBad.json.id}`)).json();
   assert.equal(loadedBad.creepCompensation, undefined);
+});
+
+// ---------- 方案标签与备注 ----------
+test('POST /api/plans：标签规范化（去空白/大小写去重）、备注随方案持久化', async () => {
+  const saved = await post('/api/plans', {
+    id: 'tags-ok', name: '标签方案', rows: 1, cols: 2, labels: {},
+    steps: [{ axis: 'v', line: 1, dir: 'r' }],
+    tags: [' 骑马钉 ', '骑马钉', 'Cover', 'cover', '样书-v1'],
+    note: '给客户的样书'
+  });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.json.ok, true);
+  assert.deepEqual(saved.json.plan.tags, ['骑马钉', 'Cover', '样书-v1']);
+  assert.equal(saved.json.plan.note, '给客户的样书');
+  const loaded = await (await fetch(`${base}/api/plans/tags-ok`)).json();
+  assert.deepEqual(loaded.tags, ['骑马钉', 'Cover', '样书-v1']);
+  assert.equal(loaded.note, '给客户的样书');
+});
+
+test('POST /api/plans：缺省 tags/note 规范化为空数组与空字符串', async () => {
+  const saved = await post('/api/plans', {
+    id: 'tags-default', name: '无标签', rows: 1, cols: 2, labels: {}, steps: []
+  });
+  assert.deepEqual(saved.json.plan.tags, []);
+  assert.equal(saved.json.plan.note, '');
+  const r = await get('/api/plans?q=无标签');
+  assert.deepEqual(r.json.items[0].tags, []);
+  assert.equal(r.json.items[0].note, '');
+});
+
+test('POST /api/plans：非法标签（含空格/逗号/非字符串）整请求 400 且不改旧存档', async () => {
+  const before = await (await fetch(`${base}/api/plans/tags-ok`)).json();
+  for (const badTags of [['bad tag'], ['a,b'], [''], [42], { x: 1 }]) {
+    const r = await post('/api/plans', {
+      id: 'tags-ok', name: '覆盖尝试', rows: 1, cols: 2, labels: {}, steps: [],
+      tags: badTags
+    });
+    assert.equal(r.status, 400, `tags=${JSON.stringify(badTags)} 应被拒绝`);
+    assert.equal(r.json.error.code, 'bad_tags');
+  }
+  // 超长标签与超过 8 个同样拒绝
+  let r = await post('/api/plans', {
+    id: 'tags-ok', rows: 1, cols: 2, labels: {}, steps: [], tags: ['x'.repeat(25)]
+  });
+  assert.equal(r.status, 400);
+  assert.equal(r.json.error.code, 'bad_tags');
+  r = await post('/api/plans', {
+    id: 'tags-ok', rows: 1, cols: 2, labels: {}, steps: [],
+    tags: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']
+  });
+  assert.equal(r.status, 400);
+  assert.equal(r.json.error.code, 'bad_tags');
+  // 旧存档原样保留（名称、标签、文件内容均未被覆盖）
+  const after = await (await fetch(`${base}/api/plans/tags-ok`)).json();
+  assert.equal(after.name, '标签方案');
+  assert.deepEqual(after.tags, ['骑马钉', 'Cover', '样书-v1']);
+  assert.equal(after.note, '给客户的样书');
+  assert.deepEqual(after.steps, before.steps);
+});
+
+test('POST /api/plans：备注非字符串/超长 400 且不改旧存档', async () => {
+  for (const note of [42, { x: 1 }, ['a']]) {
+    const r = await post('/api/plans', {
+      id: 'tags-ok', rows: 1, cols: 2, labels: {}, steps: [], note
+    });
+    assert.equal(r.status, 400);
+    assert.equal(r.json.error.code, 'bad_note');
+  }
+  const long = await post('/api/plans', {
+    id: 'tags-ok', rows: 1, cols: 2, labels: {}, steps: [], note: '字'.repeat(201)
+  });
+  assert.equal(long.status, 400);
+  assert.equal(long.json.error.code, 'bad_note');
+  const after = await (await fetch(`${base}/api/plans/tags-ok`)).json();
+  assert.equal(after.note, '给客户的样书');
+  // 恰好 200 字（按 Unicode 码点）允许保存
+  const ok = await post('/api/plans', {
+    id: 'note-max', name: '备注上限', rows: 1, cols: 2, labels: {}, steps: [],
+    note: '字'.repeat(200)
+  });
+  assert.equal(ok.status, 200);
+  assert.equal(Array.from(ok.json.plan.note).length, 200);
+});
+
+test('GET /api/plans：返回 {total,count,items} 信封，列表项含 tags/note/updatedAt', async () => {
+  const r = await get('/api/plans');
+  assert.equal(r.status, 200);
+  assert.ok(Array.isArray(r.json.items));
+  assert.equal(typeof r.json.total, 'number');
+  assert.equal(typeof r.json.count, 'number');
+  assert.equal(r.json.count, r.json.items.length);
+  assert.ok(r.json.total >= r.json.count);
+  const it = r.json.items.find((x) => x.id === 'tags-ok');
+  assert.ok(it);
+  assert.deepEqual(it.tags, ['骑马钉', 'Cover', '样书-v1']);
+  assert.equal(it.note, '给客户的样书');
+  assert.ok(typeof it.updatedAt === 'string');
+  assert.ok(!Number.isNaN(Date.parse(it.updatedAt)));
+  assert.equal('_savedAtMs' in it, false);
+});
+
+test('GET /api/plans：名称关键词筛选（大小写不敏感）与匹配计数', async () => {
+  const r = await get('/api/plans?q=' + encodeURIComponent('标签'));
+  assert.ok(r.json.items.every((it) => it.name.includes('标签')));
+  assert.ok(r.json.items.some((it) => it.id === 'tags-ok'));
+  assert.equal(r.json.count, r.json.items.length);
+  const none = await get('/api/plans?q=' + encodeURIComponent('不存在的方案名zzz'));
+  assert.deepEqual(none.json.items, []);
+  assert.equal(none.json.count, 0);
+  assert.ok(none.json.total >= 1);
+});
+
+test('GET /api/plans：标签交集筛选（重复参数与逗号分隔等价，大小写不敏感）', async () => {
+  const r1 = await get('/api/plans?tag=' + encodeURIComponent('骑马钉') + '&tag=' + encodeURIComponent('cover'));
+  assert.ok(r1.json.items.some((it) => it.id === 'tags-ok'));
+  assert.ok(r1.json.items.every((it) => it.tags.length >= 2));
+  const r2 = await get('/api/plans?tag=' + encodeURIComponent('骑马钉,cover'));
+  const ids2 = r2.json.items.map((it) => it.id).sort();
+  assert.deepEqual(r1.json.items.map((it) => it.id).sort(), ids2);
+  // 任一标签缺失则不匹配
+  const miss = await get('/api/plans?tag=' + encodeURIComponent('骑马钉') + '&tag=' + encodeURIComponent('不存在标签zzz'));
+  assert.ok(!miss.json.items.some((it) => it.id === 'tags-ok'));
+});
+
+test('GET /api/plans：since 按最近更新时间筛选，非法 since 返回 400', async () => {
+  const all = await get('/api/plans');
+  const newest = all.json.items[0];
+  const t = Date.parse(newest.updatedAt);
+  const r = await get(`/api/plans?since=${t}`);
+  assert.ok(r.json.items.every((it) => Date.parse(it.updatedAt) >= t));
+  assert.ok(r.json.items.some((it) => it.id === newest.id));
+  const future = await get(`/api/plans?since=${t + 100000}`);
+  // （后续测试若在该窗口内新建存档可能恰好落入；断言全部严格晚于 t）
+  assert.ok(future.json.items.every((it) => Date.parse(it.updatedAt) > t));
+  // ISO 字符串也可解析
+  const iso = await get('/api/plans?since=' + encodeURIComponent('2000-01-01T00:00:00Z'));
+  assert.equal(iso.json.count, iso.json.total);
+  const bad = await get('/api/plans?since=not-a-date');
+  assert.equal(bad.status, 400);
+  assert.equal(bad.json.error.code, 'bad_since');
+});
+
+test('GET /api/plans：稳定排序（更新时间降序，同时间按 id 升序）', async () => {
+  // 直接写入三个相同 savedAt 的存档，保证可重复地验证次序兜底
+  const fixed = '2026-01-01T00:00:00.000Z';
+  for (const id of ['tie-ccc', 'tie-aaa', 'tie-bbb']) {
+    fs.writeFileSync(path.join(tmpData, `${id}.json`), JSON.stringify({
+      name: id, rows: 1, cols: 2, labels: {}, steps: [],
+      tags: ['tiegrp'], note: '', savedAt: fixed
+    }));
+  }
+  const r = await get('/api/plans?tag=tiegrp');
+  assert.deepEqual(r.json.items.map((it) => it.id), ['tie-aaa', 'tie-bbb', 'tie-ccc']);
+  // 全部存档：时间降序
+  const all = await get('/api/plans');
+  for (let i = 1; i < all.json.items.length; i++) {
+    assert.ok(Date.parse(all.json.items[i - 1].updatedAt) >= Date.parse(all.json.items[i].updatedAt));
+  }
+});
+
+test('GET /api/plans：旧存档（无 tags/note/savedAt）读取时给出缺省值且不损坏文件', async () => {
+  const legacyFile = path.join(tmpData, 'legacy.json');
+  const legacyJson = JSON.stringify({ name: '旧存档', rows: 1, cols: 2, labels: {}, steps: [] });
+  // 把 mtime 固定为早于 tie 系列，避免排序偶然性影响断言
+  fs.writeFileSync(legacyFile, legacyJson);
+  const oldTime = new Date('2025-01-01T00:00:00Z').getTime();
+  fs.utimesSync(legacyFile, oldTime / 1000, oldTime / 1000);
+  const r = await get('/api/plans?q=' + encodeURIComponent('旧存档'));
+  const it = r.json.items.find((x) => x.id === 'legacy');
+  assert.ok(it);
+  assert.deepEqual(it.tags, []);
+  assert.equal(it.note, '');
+  assert.equal(Date.parse(it.updatedAt), oldTime);
+  // 源文件未被重写
+  assert.equal(fs.readFileSync(legacyFile, 'utf8'), legacyJson);
 });

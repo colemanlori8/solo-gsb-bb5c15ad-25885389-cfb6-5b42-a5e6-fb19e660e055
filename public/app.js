@@ -7,7 +7,7 @@ const PAD = 64;
 
 // ---------- 应用状态 ----------
 const app = {
-  plan: { name: '未命名方案', rows: 0, cols: 0, labels: {}, steps: [] },
+  plan: { name: '未命名方案', rows: 0, cols: 0, labels: {}, steps: [], tags: [], note: '' },
   upto: 0,                  // 当前回放到第几步
   replay: null,             // { state, error }
   loadedId: null,
@@ -52,8 +52,26 @@ function init() {
   $('exportBtn').addEventListener('click', exportPlan);
   $('importBtn').addEventListener('click', () => $('importFile').click());
   $('importFile').addEventListener('change', importPlan);
-  $('loadListBtn').addEventListener('click', loadList);
+  $('loadListBtn').addEventListener('click', () => { loadList(); });
   $('deletePlanBtn').addEventListener('click', deleteLoaded);
+
+  $('tagAddBtn').addEventListener('click', addTagFromInput);
+  $('tagInput').addEventListener('keydown', onTagInputKey);
+  $('tagClearBtn').addEventListener('click', clearTags);
+  $('planNote').addEventListener('input', onNoteInput);
+  let filterTimer = null;
+  for (const id of ['filterName', 'filterTags', 'filterSince']) {
+    $(id).addEventListener('input', () => {
+      clearTimeout(filterTimer);
+      filterTimer = setTimeout(loadList, 250);
+    });
+  }
+  $('filterClearBtn').addEventListener('click', () => {
+    $('filterName').value = '';
+    $('filterTags').value = '';
+    $('filterSince').value = '';
+    loadList();
+  });
 
   $('editorCancel').addEventListener('click', () => $('cellEditor').hidden = true);
   $('editorOk').addEventListener('click', commitEditor);
@@ -103,8 +121,15 @@ function init() {
 function createGrid() {
   const rows = clampInt($('rowsInput').value, 1, 12, 2);
   const cols = clampInt($('colsInput').value, 1, 12, 2);
-  app.plan = { name: $('planName').value || '未命名方案', rows, cols, labels: {}, steps: [] };
+  app.plan = {
+    name: $('planName').value || '未命名方案',
+    rows, cols, labels: {}, steps: [], tags: [], note: ''
+  };
   app.loadedId = null;
+  $('planNote').value = '';
+  $('tagInput').value = '';
+  renderTagEditor();
+  renderNoteCount();
   setUpto(0, true);
   refreshLineSelect();
 }
@@ -1659,13 +1684,111 @@ function showFoldError(err) {
 function clearFoldError() { $('foldError').hidden = true; }
 
 // ---------- 存取 ----------
+/** 标签本地预校验规则与服务端一致（非法/超长时服务端仍会整请求拒绝）。 */
+const TAG_RE_CLIENT = /^[\p{L}\p{N}_\-]+$/u;
+const TAG_LIMIT_CLIENT = E.TAG_LIMIT_CLIENT || 8;
+const TAG_LEN_CLIENT = E.TAG_LEN_CLIENT || 24;
+
+function tagInvalidReason(raw) {
+  const t = String(raw).trim();
+  if (!t) return null;
+  if (Array.from(t).length > TAG_LEN_CLIENT) return `单个标签最长 ${TAG_LEN_CLIENT} 个字符`;
+  if (!TAG_RE_CLIENT.test(t)) return '标签只能包含中英文、数字、下划线与连字符（不允许空格/逗号）';
+  return null;
+}
+
+function addTag(raw) {
+  const t = String(raw).trim();
+  const reason = tagInvalidReason(t);
+  if (reason) return reason;
+  if (!app.plan.tags) app.plan.tags = [];
+  const key = t.toLocaleLowerCase('en-US');
+  if (app.plan.tags.some((x) => x.toLocaleLowerCase('en-US') === key)) return '重复标签';
+  if (app.plan.tags.length >= TAG_LIMIT_CLIENT) return `最多 ${TAG_LIMIT_CLIENT} 个标签`;
+  app.plan.tags.push(t);
+  renderTagEditor();
+  return null;
+}
+
+function addTagFromInput() {
+  const input = $('tagInput');
+  // 支持一次粘贴多个标签（半/全角逗号、分号、空白分隔）
+  const parts = input.value.split(/[,，;；\s]+/).map((s) => s.trim()).filter(Boolean);
+  let err = null;
+  for (const p of parts) {
+    err = addTag(p);
+    if (err) break;
+  }
+  if (err) $('saveMsg').textContent = '标签未添加：' + err;
+  input.value = '';
+  input.focus();
+}
+
+function onTagInputKey(e) {
+  if (e.key === 'Enter' || e.key === ',' || e.key === '，' || e.key === ';') {
+    e.preventDefault();
+    addTagFromInput();
+  } else if (e.key === 'Backspace' && !e.target.value && app.plan.tags.length) {
+    app.plan.tags.pop();
+    renderTagEditor();
+  }
+}
+
+function removeTag(i) {
+  app.plan.tags.splice(i, 1);
+  renderTagEditor();
+}
+
+function clearTags() {
+  app.plan.tags = [];
+  renderTagEditor();
+  $('saveMsg').textContent = '已清除全部标签（需保存方案后生效）。';
+}
+
+function renderTagEditor() {
+  const box = $('tagChips');
+  box.innerHTML = '';
+  (app.plan.tags || []).forEach((t, i) => {
+    const chip = document.createElement('span');
+    chip.className = 'tag-chip';
+    const txt = document.createElement('b');
+    txt.textContent = t;
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.className = 'tag-x';
+    x.title = '移除该标签';
+    x.textContent = '×';
+    x.addEventListener('click', () => removeTag(i));
+    chip.append(txt, x);
+    box.appendChild(chip);
+  });
+  const n = (app.plan.tags || []).length;
+  $('tagAddBtn').disabled = n >= TAG_LIMIT_CLIENT;
+  $('tagInput').disabled = n >= TAG_LIMIT_CLIENT;
+  $('tagInput').placeholder = n >= TAG_LIMIT_CLIENT
+    ? `已达上限 ${TAG_LIMIT_CLIENT} 个` : '如：骑马钉、样书';
+  $('tagClearBtn').hidden = n === 0;
+}
+
+function onNoteInput() {
+  app.plan.note = $('planNote').value;
+  renderNoteCount();
+}
+
+function renderNoteCount() {
+  const n = Array.from(app.plan.note || '').length;
+  $('noteCount').textContent = `${n}/200`;
+}
+
 function planPayload() {
   const p = {
     name: $('planName').value || '未命名方案',
     rows: app.plan.rows,
     cols: app.plan.cols,
     labels: app.plan.labels,
-    steps: app.plan.steps
+    steps: app.plan.steps,
+    tags: app.plan.tags || [],
+    note: app.plan.note || ''
   };
   // 爬移补偿独立方案字段：应用后随保存/导出保留
   if (app.plan.creepCompensation) p.creepCompensation = app.plan.creepCompensation;
@@ -1679,6 +1802,10 @@ function applyPlan(plan, id) {
   $('planName').value = p.name;
   $('rowsInput').value = p.rows;
   $('colsInput').value = p.cols;
+  $('planNote').value = p.note || '';
+  $('tagInput').value = '';
+  renderTagEditor();
+  renderNoteCount();
   // 载入已应用的爬移补偿方案：回填参数输入框（逐面偏移在独立字段中保留）
   if (p.creepCompensation && p.creepCompensation.params) {
     $('creepThickness').value = p.creepCompensation.params.paperThickness;
@@ -1687,11 +1814,20 @@ function applyPlan(plan, id) {
   refreshLineSelect();
   setUpto(p.steps.length, true);
   $('deletePlanBtn').hidden = !id;
-  $('saveMsg').textContent = id ? `已载入服务器存档 ${id}` : '已载入 JSON 文件';
+  $('saveMsg').textContent = id
+    ? `已载入服务器存档 ${id}（${p.tags.length} 个标签${p.note ? '，含备注' : ''}）`
+    : '已载入 JSON 文件';
 }
 
 async function savePlan() {
   if (!app.plan.rows) { $('saveMsg').textContent = '请先创建网格。'; return; }
+  // 前端预校验；服务端会再严格校验一次（非法标签/超长整请求拒绝且不改旧存档）
+  const bad = (app.plan.tags || []).map(tagInvalidReason).find(Boolean);
+  if (bad) { $('saveMsg').textContent = '保存失败：' + bad; return; }
+  if (Array.from(app.plan.note || '').length > 200) {
+    $('saveMsg').textContent = '保存失败：备注最长 200 个字符';
+    return;
+  }
   try {
     const resp = await fetch('/api/plans', {
       method: 'POST',
@@ -1701,8 +1837,12 @@ async function savePlan() {
     const data = await resp.json();
     if (!data.ok) throw new Error(data.error.message);
     app.loadedId = data.id;
+    app.plan.tags = data.plan.tags;
+    app.plan.note = data.plan.note;
+    renderTagEditor();
+    renderNoteCount();
     $('deletePlanBtn').hidden = false;
-    $('saveMsg').textContent = `已保存：${data.id}（${new Date().toLocaleTimeString()}）`;
+    $('saveMsg').textContent = `已保存：${data.id}（${data.plan.tags.length} 个标签，${new Date().toLocaleTimeString()}）`;
   } catch (e) {
     $('saveMsg').textContent = '保存失败：' + e.message;
   }
@@ -1733,29 +1873,85 @@ function importPlan(e) {
   e.target.value = '';
 }
 
+/** 依据筛选输入构造 GET /api/plans 查询串（标签交集 / 名称关键词 / 最近更新时间）。 */
+function planListQuery() {
+  const params = new URLSearchParams();
+  const q = $('filterName').value.trim();
+  if (q) params.set('q', q);
+  const tags = $('filterTags').value.split(/[,，;；\s]+/).map((s) => s.trim()).filter(Boolean);
+  for (const t of tags) params.append('tag', t);
+  if ($('filterSince').value) params.set('since', String(new Date($('filterSince').value).getTime()));
+  const s = params.toString();
+  return s ? '?' + s : '';
+}
+
+function formatTime(iso) {
+  const d = new Date(iso);
+  return Number.isFinite(d.getTime()) ? d.toLocaleString() : '';
+}
+
 async function loadList() {
   const ul = $('planList');
   ul.hidden = false;
+  $('planFilter').hidden = false;
+  $('planCount').hidden = false;
   ul.innerHTML = '<li class="muted">加载中…</li>';
   try {
-    const resp = await fetch('/api/plans');
-    const items = await resp.json();
+    const resp = await fetch('/api/plans' + planListQuery());
+    const data = await resp.json();
+    if (!resp.ok || data.error) throw new Error((data.error && data.error.message) || '读取失败');
+    // 兼容旧版直接返回数组的形态
+    const items = Array.isArray(data) ? data : data.items;
+    const count = items.length;
+    const total = Array.isArray(data) ? items.length : data.total;
+    $('planCount').textContent = `匹配 ${count} / ${total} 个存档`;
     ul.innerHTML = '';
     if (!items.length) {
-      ul.innerHTML = '<li class="muted">服务器上还没有存档</li>';
+      ul.innerHTML = '<li class="muted">没有符合筛选条件的存档</li>';
       return;
     }
     items.forEach((it) => {
       const li = document.createElement('li');
+      li.className = 'plan-item';
+      const main = document.createElement('div');
+      main.className = 'plan-item-main';
       const info = document.createElement('span');
+      info.className = 'plan-item-name';
       info.textContent = `${it.name}（${it.rows}×${it.cols}，${it.steps} 步）`;
+      const meta = document.createElement('span');
+      meta.className = 'muted plan-item-meta';
+      meta.textContent = `${it.id} · 更新于 ${formatTime(it.updatedAt || it.savedAt)}`;
+      const chips = document.createElement('span');
+      chips.className = 'plan-item-tags';
+      (it.tags || []).forEach((t) => {
+        const chip = document.createElement('span');
+        chip.className = 'tag-chip mini';
+        chip.textContent = t;
+        chip.title = '点击把该标签加入筛选';
+        chip.addEventListener('click', () => {
+          const cur = $('filterTags').value.split(/[,，;；\s]+/).map((s) => s.trim()).filter(Boolean);
+          const key = t.toLocaleLowerCase('en-US');
+          if (!cur.some((x) => x.toLocaleLowerCase('en-US') === key)) cur.push(t);
+          $('filterTags').value = cur.join(',');
+          loadList();
+        });
+        chips.appendChild(chip);
+      });
+      if (it.note) {
+        const note = document.createElement('span');
+        note.className = 'plan-item-note';
+        note.textContent = it.note;
+        note.title = it.note;
+        chips.appendChild(note);
+      }
+      main.append(info, meta, chips);
       const btn = document.createElement('button');
       btn.textContent = '载入';
       btn.addEventListener('click', async () => {
         const r = await fetch(`/api/plans/${it.id}`);
         applyPlan(await r.json(), it.id);
       });
-      li.append(info, btn);
+      li.append(main, btn);
       ul.appendChild(li);
     });
   } catch (e) {
@@ -1779,6 +1975,8 @@ if (typeof window !== 'undefined') {
   window.__foldApp = Object.assign(app, {
     requestStep, setUpto, createGrid, render, getFoldError: () => $('foldError'),
     applyPlan, planPayload,
+    addTag, addTagFromInput, removeTag, clearTags, renderTagEditor, tagInvalidReason,
+    planListQuery, loadList,
     previewImposition, confirmImposition, closeImposition, renderImposition,
     readImposeInputs, runPathfind, doPathfindSearch, appendPathSolution, renderPathfind,
     renderTrack, refreshTrackCells, jumpTrackPoint, currentTrackInfo,

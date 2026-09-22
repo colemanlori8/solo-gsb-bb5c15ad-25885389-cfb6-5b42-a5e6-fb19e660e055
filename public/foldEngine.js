@@ -1230,6 +1230,109 @@ function auditPlan(rows, cols, labels, steps) {
   };
 }
 
+/**
+ * 方案标签与备注的服务端规范化规则（浏览器与服务端共用同一份代码）：
+ *  - 标签：去首尾空白；1～24 个字符（按 Unicode 码点计数）；仅允许
+ *    字母/数字/下划线/连字符以及 CJK 统一表意文字，不允许空白、逗号与控制字符；
+ *  - 去重：大小写不敏感（保留首个写法）；每个方案 0～8 个；
+ *  - 备注：字符串，最多 200 个字符（按 Unicode 码点计数）。
+ */
+const TAG_MAX_COUNT = 8;
+const TAG_MAX_LEN = 24;
+const NOTE_MAX_LEN = 200;
+const TAG_ALLOWED_RE = /^[\p{L}\p{N}_\-]+$/u;
+
+function charLen(s) { return Array.from(String(s)).length; }
+
+/**
+ * 严格校验并规范化标签（POST /api/plans 保存时使用）。
+ * 任何非法输入都抛出带 code 的错误，调用方应整请求拒绝、不写入存档。
+ */
+function normalizeTags(raw) {
+  if (raw == null) return [];
+  if (!Array.isArray(raw)) {
+    const e = new Error('tags 必须为数组（0～8 个标签）');
+    e.code = 'bad_tags';
+    throw e;
+  }
+  const tags = [];
+  const seen = new Set();
+  for (const item of raw) {
+    if (typeof item !== 'string') {
+      const e = new Error('标签必须为字符串');
+      e.code = 'bad_tags';
+      throw e;
+    }
+    const t = item.trim();
+    if (!t) {
+      const e = new Error('标签不能为空');
+      e.code = 'bad_tags';
+      throw e;
+    }
+    if (charLen(t) > TAG_MAX_LEN) {
+      const e = new Error(`单个标签最长 ${TAG_MAX_LEN} 个字符：「${t}」`);
+      e.code = 'bad_tags';
+      throw e;
+    }
+    if (!TAG_ALLOWED_RE.test(t)) {
+      const e = new Error(`标签只能包含中英文、数字、下划线与连字符，不允许空白/逗号：「${t}」`);
+      e.code = 'bad_tags';
+      throw e;
+    }
+    const key = t.toLocaleLowerCase('en-US');
+    if (!seen.has(key)) { seen.add(key); tags.push(t); }
+  }
+  if (tags.length > TAG_MAX_COUNT) {
+    const e = new Error(`每个方案最多 ${TAG_MAX_COUNT} 个标签（当前 ${tags.length} 个）`);
+    e.code = 'bad_tags';
+    throw e;
+  }
+  return tags;
+}
+
+/**
+ * 严格校验备注（POST /api/plans 保存时使用）；缺省为 ''，非字符串或超长抛错。
+ */
+function normalizeNote(raw) {
+  if (raw == null) return '';
+  if (typeof raw !== 'string') {
+    const e = new Error('note 必须为字符串');
+    e.code = 'bad_note';
+    throw e;
+  }
+  if (charLen(raw) > NOTE_MAX_LEN) {
+    const e = new Error(`备注最长 ${NOTE_MAX_LEN} 个字符（当前 ${charLen(raw)} 个）`);
+    e.code = 'bad_note';
+    throw e;
+  }
+  return raw;
+}
+
+/**
+ * 宽松规范化标签（导入 JSON / 载入旧存档时使用）：
+ * 非法或超长标签静默丢弃，大小写不敏感去重并截断到 8 个，不影响方案其余部分。
+ */
+function coerceTags(raw) {
+  if (!Array.isArray(raw)) return [];
+  const tags = [];
+  const seen = new Set();
+  for (const item of raw) {
+    if (typeof item !== 'string') continue;
+    const t = item.trim();
+    if (!t || charLen(t) > TAG_MAX_LEN || !TAG_ALLOWED_RE.test(t)) continue;
+    const key = t.toLocaleLowerCase('en-US');
+    if (!seen.has(key)) { seen.add(key); tags.push(t); }
+    if (tags.length >= TAG_MAX_COUNT) break;
+  }
+  return tags;
+}
+
+/** 宽松规范化备注（导入 JSON / 载入旧存档）：非字符串丢弃，超长截断。 */
+function coerceNote(raw) {
+  if (typeof raw !== 'string') return '';
+  return Array.from(raw).slice(0, NOTE_MAX_LEN).join('');
+}
+
 /** 方案校验/规整（载入 JSON 时使用） */
 function normalizePlan(plan) {
   const errors = [];
@@ -1271,7 +1374,9 @@ function normalizePlan(plan) {
   }
   const normalized = {
     name: plan.name ? String(plan.name) : '未命名方案',
-    rows, cols, labels, steps
+    rows, cols, labels, steps,
+    tags: coerceTags(plan.tags),
+    note: coerceNote(plan.note)
   };
   // 爬移补偿为独立方案字段：结构合法则保留（随方案保存/导入/服务端载入），
   // 非法则静默丢弃，不影响方案其余部分。
@@ -1283,6 +1388,8 @@ function normalizePlan(plan) {
 const api = {
   initialState, cloneState, validateFold, applyFold,
   replay, visibleFace, pageSequence, normalizePlan, key,
+  normalizeTags, normalizeNote, coerceTags, coerceNote,
+  TAG_MAX_COUNT, TAG_MAX_LEN, NOTE_MAX_LEN,
   impositionEligibility, autoImpose, impositionOverwrite,
   duplexEligibility, buildDuplexPlates,
   creepEligibility, creepCompensation, normalizeCreepScheme,

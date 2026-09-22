@@ -150,9 +150,20 @@ docker compose down
       不一致时保留字段并**标黄提示需重新应用**，不会静默改写；
     - 方案含**非法折叠**或**尚未收成单叠**时卡片禁用并说明原因（未折叠的 1×1
       单叠可计算，补偿全为 0）。
-12. **保存 / 载入**：
-   - “保存到服务器”将方案 JSON 存入容器数据卷，可通过“已存方案…”再次载入；
-   - “导出 JSON / 导入 JSON”在本地文件与应用之间交换方案。
+12. **保存 / 载入（标签、备注与筛选）**：
+    - 保存前可在“方案存取”卡片维护 **0～8 个标签**（回车/逗号添加，逐个 × 移除或一键清除）
+      与 **≤200 字备注**；标签仅允许中英文、数字、下划线与连字符（每个 ≤24 字），
+      保存时服务端**去首尾空白、大小写不敏感去重**后随方案持久化；
+    - 非法标签（含空格/逗号等）、标签超限或备注超长时，服务端**整请求拒绝（HTTP 400
+      `bad_tags` / `bad_note`）且不改动任何旧存档**；导入本地 JSON 时则宽松处理
+      （非法标签静默丢弃、重复去重、备注截断到 200 字）；
+    - “保存到服务器”将方案 JSON（含标签与备注）存入容器数据卷，点击“已存方案…”后可用：
+      - **名称关键词**（不区分大小写）、
+      - **标签交集**（多个标签取交集；逗号分隔，也可点列表中的标签徽标快速加入）、
+      - **最近更新时间**（仅看该时间之后更新的存档）
+      组合筛选；列表按**最近更新时间降序**稳定排序（同一时间按 id 升序兜底），
+      并显示“匹配 N / 共 M 个存档”的匹配计数；
+    - “导出 JSON / 导入 JSON”在本地文件与应用之间交换方案（标签与备注同样保留）。
 
 ### 方案 JSON 格式
 
@@ -167,14 +178,23 @@ docker compose down
   "steps": [
     { "axis": "v", "line": 1, "dir": "r" },
     { "axis": "h", "line": 1, "dir": "d" }
-  ]
+  ],
+  "tags": ["骑马钉", "Cover"],
+  "note": "客户 A 的 8 页样书",
+  "savedAt": "2026-09-22T08:00:00.000Z"
 }
 ```
 
 - `labels` 的键为 `列,行`（0 基），值为该格正反面页码字符串；
 - 步骤中 `axis`：`v` 竖直线 / `h` 水平线；
 - `line=k` 表示第 `k-1` 与第 `k` 列（或行）之间的网格线（`1 ≤ k < 列/行数`）；
-- `dir` 为纸瓣落向：竖线用 `l` / `r`，横线用 `u` / `d`。
+- `dir` 为纸瓣落向：竖线用 `l` / `r`，横线用 `u` / `d`；
+- `tags` 为 **0～8 个标签**的数组：标签为 1～24 字（Unicode 码点），
+  仅允许 `\p{L}\p{N}_-`（中英文/数字/下划线/连字符，不含空白与标点）；
+  保存接口会去首尾空白并按大小写不敏感去重，非法或超限整请求 400 拒绝；
+  导入 JSON 时非法标签静默丢弃；缺省为 `[]`；
+- `note` 为 ≤200 字（Unicode 码点）的备注字符串，缺省为 `""`；超长保存被拒绝、导入截断；
+- `savedAt` 为服务端保存时刻（ISO 8601），同时用于列表的“最近更新时间”筛选与排序。
 
 应用过爬移补偿的方案还会带独立字段 `creepCompensation`（不应用则缺省）：
 
@@ -215,13 +235,13 @@ docker compose down
 ## 目录结构
 
 ```
-server.js              Express 服务：静态托管 + /api/simulate + /api/impose + /api/duplex-plate + /api/find-path + /api/trajectory + /api/audit + /api/creep-compensation + 方案持久化
+server.js              Express 服务：静态托管 + /api/simulate + /api/impose + /api/duplex-plate + /api/find-path + /api/trajectory + /api/audit + /api/creep-compensation + 方案持久化（标签/备注/筛选）
 entrypoint.sh          容器启动入口（依赖自检/安装、初始化、启动）
 public/
-  index.html           页面结构
-  styles.css           样式（含面片轨迹时间线、审计卡片、爬移补偿表与双面版打印样式 @media print）
-  foldEngine.js        折叠模拟引擎（浏览器与服务端共用，含面片轨迹 trackPanel、生产质量审计 auditPlan、书帖爬移补偿 creepCompensation）
-  app.js               Canvas 渲染、交互、回放、面片轨迹、存取、双面印刷版预览、生产质量审计、书帖爬移补偿
+  index.html           页面结构（含标签/备注编辑与存档筛选控件）
+  styles.css           样式（含标签徽标、存档列表/筛选、面片轨迹时间线、审计卡片、爬移补偿表与双面版打印样式 @media print）
+  foldEngine.js        折叠模拟引擎（浏览器与服务端共用，含标签/备注规范化 normalizeTags/normalizeNote、面片轨迹 trackPanel、生产质量审计 auditPlan、书帖爬移补偿 creepCompensation）
+  app.js               Canvas 渲染、交互、回放、面片轨迹、存取（标签/备注/筛选）、双面印刷版预览、生产质量审计、书帖爬移补偿
 tests/engine.test.js   引擎单元测试（node --test）
 tests/imposition.test.js 自动拼版单元测试
 tests/duplex.test.js   双面印刷版（镜像、制版旋转、前置条件）单元测试
@@ -229,7 +249,8 @@ tests/pathfind.test.js 折手自动寻路（BFS、状态键、无解/超限）�
 tests/trajectory.test.js 面片轨迹（身份追踪、层序/朝向、非法步中断、参数校验）单元测试
 tests/audit.test.js    生产质量审计（分级结论、空白/重复/倒置/未覆盖/容量、非法步中止）单元测试
 tests/creep.test.js    书帖爬移补偿（层序、书脊方向、标架换算、出血标红、字段规整）单元测试
-tests/api.test.js      /api/impose、/api/find-path、/api/trajectory、/api/audit、/api/creep-compensation、/api/simulate 与方案存取的 HTTP 测试
+tests/tags.test.js     标签/备注规范化（严格拒绝、去重、长度、导入宽松规整）单元测试
+tests/api.test.js      /api/impose、/api/find-path、/api/trajectory、/api/audit、/api/creep-compensation、/api/simulate 与方案存取（含标签/备注与筛选）的 HTTP 测试
 tests/ui-smoke.js      前端主流程冒烟（DOM 桩中加载 app.js，直接 `node tests/ui-smoke.js` 运行）
 Dockerfile, docker-compose.yml
 ```
@@ -237,8 +258,8 @@ Dockerfile, docker-compose.yml
 ## 运行测试
 
 ```bash
-npm test                 # node --test：引擎 / 拼版 / 寻路 / 轨迹 / HTTP 测试
-node tests/ui-smoke.js   # 前端主流程冒烟（DOM 桩，独立运行）
+npm test                 # node --test：引擎 / 拼版 / 寻路 / 轨迹 / 标签备注 / HTTP 测试
+node tests/ui-smoke.js   # 前端主流程冒烟（DOM 桩，独立运行，含标签编辑与筛选查询）
 ```
 
 服务端另有 `POST /api/simulate`（body 同方案 JSON，可用 `upto` 指定回放步数）返回
@@ -322,3 +343,43 @@ node tests/ui-smoke.js   # 前端主流程冒烟（DOM 桩，独立运行）
 方案含非法折叠时返回 `ok:false` 与首个错误（`code` / `stepIndex` / `conflicts`），
 不附带任何后续检查结论；网格非法为 `bad_grid`，方案 JSON 非法为 `bad_plan`（HTTP 400）。
 该接口只读，不改动方案与存档。
+
+### 方案存档：`/api/plans`
+
+- `POST /api/plans`：body 为方案 JSON，可带可选 `id`（`[A-Za-z0-9_-]{1,64}`，缺省随机生成）、
+  `tags`（0～8 个）与 `note`（≤200 字）。服务端先对标签/备注做**严格规范化**
+  （去首尾空白、大小写不敏感去重、字符白名单与长度限制），通过后才写盘
+  （临时文件 + rename 原子替换）。任何非法输入都返回 **HTTP 400 且不改动旧存档**：
+  - `bad_tags`：非数组、含非字符串/空串/空白或逗号等非法字符、单个超过 24 字、去重后超过 8 个；
+  - `bad_note`：非字符串或超过 200 字；
+  - `bad_plan`：方案其余字段（rows/cols/labels/steps）非法。
+  成功返回 `{ ok:true, id, plan }`，`plan.savedAt` 为本次保存时间。
+
+- `GET /api/plans`：列出存档，返回信封
+  `{ total, count, items }`（`total`=存档总数，`count`/`items`=筛选后匹配数与列表）。
+  每个 item 含 `id`、`name`、`rows`、`cols`、`steps`、`tags`、`note`、`savedAt`、`updatedAt`。
+  查询参数（可任意组合）：
+  - `q`：名称关键词，大小写不敏感的子串匹配；
+  - `tag`：标签筛选，**多个标签取交集**；可重复传 `?tag=a&tag=b`，
+    也可用逗号/分号（含全角）分隔 `?tag=a,b`；大小写不敏感；
+  - `since`：仅返回该时间**之后更新**的存档，接受毫秒时间戳或 ISO 8601 字符串，
+    无法解析返回 HTTP 400 `bad_since`。
+
+  列表为**稳定排序**：按最近更新时间（`savedAt`，旧存档无该字段时回退文件 mtime）
+  降序，同一时间按 `id` 升序兜底。
+
+- `GET /api/plans/:id`：返回单个方案完整 JSON（含 `tags` / `note` / `savedAt`）；
+  id 非法 400，不存在 404。
+- `DELETE /api/plans/:id`：删除存档（幂等，不存在也返回 `{ ok:true }`）。
+
+示例：
+
+```bash
+# 保存带标签/备注的方案
+curl -s -X POST http://localhost:3000/api/plans \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"8页折帖","rows":1,"cols":2,"labels":{},"steps":[{"axis":"v","line":1,"dir":"r"}],"tags":["骑马钉","Cover"],"note":"客户A样书"}'
+
+# 标签交集 + 名称关键词 + 更新时间筛选
+curl -s 'http://localhost:3000/api/plans?tag=骑马钉&tag=cover&q=折帖&since=2026-01-01'
+```

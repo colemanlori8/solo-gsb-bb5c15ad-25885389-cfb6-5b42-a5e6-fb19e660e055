@@ -57,6 +57,20 @@
 
       <section class="card">
         <h2>3. 方案存取</h2>
+        <div class="meta-edit">
+          <label class="meta-label">标签（0～8 个，回车或逗号添加；中英文 / 数字 / _ / -，每个 ≤24 字）
+            <div class="tag-input-row">
+              <input id="tagInput" type="text" maxlength="200" placeholder="如：骑马钉、样书" />
+              <button id="tagAddBtn" type="button">添加</button>
+            </div>
+          </label>
+          <div id="tagChips" class="tag-chips"></div>
+          <button id="tagClearBtn" type="button" class="link-btn" hidden>清除全部标签</button>
+          <label class="meta-label">备注（≤200 字）
+            <textarea id="planNote" rows="2" maxlength="200" placeholder="可记录纸张、客户、用途等备注"></textarea>
+          </label>
+          <span id="noteCount" class="note-count">0/200</span>
+        </div>
         <div class="row wrap">
           <button id="saveBtn" class="primary">保存到服务器</button>
           <button id="exportBtn">导出 JSON</button>
@@ -67,6 +81,13 @@
           <button id="loadListBtn">已存方案…</button>
           <button id="deletePlanBtn" class="danger" hidden>删除当前存档</button>
         </div>
+        <div id="planFilter" class="plan-filter" hidden>
+          <input id="filterName" type="text" placeholder="名称关键词" />
+          <input id="filterTags" type="text" placeholder="标签，多个取交集（逗号分隔）" />
+          <input id="filterSince" type="datetime-local" title="仅看此时间之后更新的存档" />
+          <button id="filterClearBtn" type="button">清除筛选</button>
+        </div>
+        <div id="planCount" class="hint plan-count" hidden></div>
         <ul id="planList" class="plan-list" hidden></ul>
         <div id="saveMsg" class="hint"></div>
       </section>

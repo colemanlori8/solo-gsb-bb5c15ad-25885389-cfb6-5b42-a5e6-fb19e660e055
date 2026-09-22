@@ -13,8 +13,15 @@ if [ ! -d /app/node_modules ]; then
   npm install --omit=dev --no-audit --no-fund
 fi
 
-# 引擎自检（确保折叠逻辑模块可加载）
-node -e "require('./public/foldEngine.js'); console.log('[fold-proofing] 折叠引擎自检通过');"
+# 引擎自检（确保折叠逻辑模块与标签/备注规范化可加载）
+node -e "
+const E = require('./public/foldEngine.js');
+const assert = require('assert');
+assert.deepEqual(E.normalizeTags([' A ', 'a', '骑马钉']), ['A', '骑马钉']);
+assert.equal(E.normalizeNote('备注'), '备注');
+assert.throws(() => E.normalizeTags(['bad tag']), e => e.code === 'bad_tags');
+console.log('[fold-proofing] 折叠引擎与标签/备注规范化自检通过');
+"
 
 echo "[fold-proofing] 启动 Web 服务，端口 ${PORT:-3000} ..."
 exec node server.js

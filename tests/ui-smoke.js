@@ -18,7 +18,7 @@ function makeEl(id) {
     width: 0, height: 0,
     addEventListener(t, fn) { (listeners[t] = listeners[t] || []).push(fn); },
     dispatch(t, ev = {}) { (listeners[t] || []).forEach((fn) => fn(ev)); },
-    click() {},
+    click() {}, focus() {},
     appendChild() {}, append() {}, querySelector() { return makeEl('q'); },
     querySelectorAll() { return []; },
     removeAttribute() {}, setAttribute() {},
@@ -53,6 +53,8 @@ const ids = ['rowsInput', 'colsInput', 'createGridBtn', 'axisSelect', 'lineSelec
   'stepSlider', 'stepLabel', 'statusBadge', 'board', 'canvasHint', 'stepList',
   'delStepBtn', 'clearStepsBtn', 'orientInfo', 'sequenceBox', 'foldState',
   'cellEditor', 'editorOrigin', 'editorRows', 'editorCancel', 'editorOk', 'planName',
+  'tagInput', 'tagAddBtn', 'tagChips', 'tagClearBtn', 'planNote', 'noteCount',
+  'planFilter', 'filterName', 'filterTags', 'filterSince', 'filterClearBtn', 'planCount',
   'imposeStart', 'imposeCount', 'imposePreviewBtn', 'imposeStatus', 'imposePreview',
   'imposeSummary', 'imposeOverwrite', 'imposeRows', 'imposeCancelBtn', 'imposeConfirmBtn',
   'pathCell', 'pathFace', 'pathSearchBtn', 'pathStatus', 'pathResults',
@@ -91,6 +93,8 @@ const sandbox = {
   },
   fetch: async () => ({ json: async () => ({ ok: false }) }),
   Blob: class {}, URL: { createObjectURL: () => 'blob:x', revokeObjectURL() {} },
+  URLSearchParams,
+  Date,
   FileReader: class { readAsText() {} },
   alert() {}, confirm() { return false; },
   setTimeout, clearInterval, setInterval: () => 1
@@ -614,5 +618,68 @@ assert.ok(ui.plan.creepCompensation);
 assert.equal(els.creepThickness.value, '0.25');
 assert.equal(els.creepBleed.value, '2.5');
 assert.equal(ui.plan.creepCompensation.faces['1,0'].front, 0.25);
+
+// ---------- 标签与备注 ----------
+els.rowsInput.value = '1'; els.colsInput.value = '2';
+els.createGridBtn.dispatch('click');
+assert.deepEqual(ui.plan.tags, []);
+assert.equal(ui.plan.note, '');
+
+// 添加标签：逗号分隔批量添加，自动去空白
+els.tagInput.value = '骑马钉, 样书-v1';
+ui.addTagFromInput();
+assert.deepEqual(ui.plan.tags, ['骑马钉', '样书-v1']);
+assert.equal(els.tagInput.value, '');
+assert.equal(els.tagClearBtn.hidden, false);
+
+// 去重（大小写不敏感）与非法字符拒绝
+assert.equal(ui.addTag('骑马钉'), '重复标签');
+assert.equal(ui.addTag('bad tag'), '标签只能包含中英文、数字、下划线与连字符（不允许空格/逗号）');
+assert.equal(ui.addTag('x'.repeat(25)), '单个标签最长 24 个字符');
+assert.equal(ui.plan.tags.length, 2, '非法标签不得入列');
+assert.equal(ui.addTag('Cover'), null);
+assert.equal(ui.addTag('cover'), '重复标签');
+
+// 移除与清除
+ui.removeTag(2);
+assert.deepEqual(ui.plan.tags, ['骑马钉', '样书-v1']);
+ui.clearTags();
+assert.deepEqual(ui.plan.tags, []);
+assert.equal(els.tagClearBtn.hidden, true);
+ui.addTag('骑马钉');
+
+// 备注与计数
+els.planNote.value = '给客户的样书';
+els.planNote.dispatch('input');
+assert.equal(ui.plan.note, '给客户的样书');
+assert.equal(els.noteCount.textContent, '6/200');
+
+// 保存载荷含 tags/note
+const payload = ui.planPayload();
+assert.deepEqual(payload.tags, ['骑马钉']);
+assert.equal(payload.note, '给客户的样书');
+
+// 导入（宽松规整）：非法标签静默丢弃、重复去重、备注超长截断
+ui.applyPlan({
+  name: '标签载入', rows: 1, cols: 2, labels: {}, steps: [],
+  tags: ['ok', 'bad tag', '骑马钉', 'OK', 42],
+  note: 'x'.repeat(250)
+}, null);
+assert.deepEqual(ui.plan.tags, ['ok', '骑马钉']);
+assert.equal(Array.from(ui.plan.note).length, 200);
+assert.equal(els.planNote.value.length, 200);
+
+// 存档列表筛选查询串：名称关键词、标签交集（重复参数）、更新时间
+els.filterName.value = '骑马';
+els.filterTags.value = '骑马钉, 样书';
+els.filterSince.value = '2026-09-22T08:00';
+const qs = ui.planListQuery();
+assert.match(qs, /q=/);
+assert.match(qs, /tag=%E9%AA%91%E9%A9%AC%E9%92%89/);
+assert.match(qs, /tag=%E6%A0%B7%E4%B9%A6/);
+assert.match(qs, /since=\d+/);
+assert.equal(qs.split('tag=').length - 1, 2, '多标签以重复 tag 参数取交集');
+els.filterName.value = ''; els.filterTags.value = ''; els.filterSince.value = '';
+assert.equal(ui.planListQuery(), '');
 
 console.log('前端冒烟流程全部通过');

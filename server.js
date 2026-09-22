@@ -223,37 +223,108 @@ app.post('/api/creep-compensation', (req, res) => {
 // ---------- 方案持久化 ----------
 function planFile(id) { return path.join(DATA_DIR, `${id}.json`); }
 
-app.get('/api/plans', (_req, res) => {
-  const items = fs.readdirSync(DATA_DIR)
-    .filter((f) => f.endsWith('.json'))
-    .map((f) => {
-      try {
-        const p = JSON.parse(fs.readFileSync(path.join(DATA_DIR, f), 'utf8'));
-        const st = fs.statSync(path.join(DATA_DIR, f));
-        return { id: f.replace(/\.json$/, ''), name: p.name || '未命名方案', rows: p.rows, cols: p.cols, steps: (p.steps || []).length, savedAt: st.mtimeMs };
-      } catch { return null; }
+/** 存档的更新时间：优先取持久化的 savedAt，旧存档缺省时回退到文件 mtime。 */
+function planSavedAt(p, st) {
+  const t = Date.parse(p && p.savedAt);
+  return Number.isFinite(t) ? t : st.mtimeMs;
+}
+
+/** 列表筛选标签：支持重复 query（?tag=a&tag=b）与逗号/分号分隔（含全角逗号）。 */
+function filterTags(query) {
+  const raw = query.tag == null ? [] : (Array.isArray(query.tag) ? query.tag : [query.tag]);
+  const out = [];
+  for (const part of raw) {
+    if (typeof part !== 'string') continue;
+    for (const t of part.split(/[,，;；]/)) {
+      const v = t.trim();
+      if (v) out.push(v);
+    }
+  }
+  return out;
+}
+
+app.get('/api/plans', (req, res) => {
+  // since 支持毫秒时间戳（整数）或 ISO 日期字符串；无法解析则整请求 400
+  let since = null;
+  if (req.query.since != null && req.query.since !== '') {
+    const raw = String(req.query.since);
+    since = /^\d+$/.test(raw) ? Number(raw) : Date.parse(raw);
+    if (!Number.isFinite(since)) {
+      return res.status(400).json({ ok: false, error: { code: 'bad_since', message: 'since 必须为毫秒时间戳或 ISO 时间字符串' } });
+    }
+  }
+  const q = typeof req.query.q === 'string' ? req.query.q.trim().toLocaleLowerCase('en-US') : '';
+  const wantTags = filterTags(req.query).map((t) => t.toLocaleLowerCase('en-US'));
+
+  let all;
+  try {
+    all = fs.readdirSync(DATA_DIR)
+      .filter((f) => f.endsWith('.json'))
+      .map((f) => {
+        const fp = path.join(DATA_DIR, f);
+        try {
+          const p = JSON.parse(fs.readFileSync(fp, 'utf8'));
+          const st = fs.statSync(fp);
+          const savedAtMs = planSavedAt(p, st);
+          return {
+            id: f.replace(/\.json$/, ''),
+            name: p.name || '未命名方案',
+            rows: p.rows, cols: p.cols,
+            steps: Array.isArray(p.steps) ? p.steps.length : 0,
+            tags: E.coerceTags(p.tags),
+            note: E.coerceNote(p.note),
+            savedAt: new Date(savedAtMs).toISOString(),
+            updatedAt: new Date(savedAtMs).toISOString(),
+            _savedAtMs: savedAtMs
+          };
+        } catch { return null; }
+      })
+      .filter(Boolean);
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: { code: 'list_failed', message: e.message } });
+  }
+
+  // 稳定排序：最近更新时间降序，时间相同按 id 升序兜底
+  const items = all
+    .filter((it) => {
+      if (since != null && it._savedAtMs < since) return false;
+      if (q && !it.name.toLocaleLowerCase('en-US').includes(q)) return false;
+      if (wantTags.length) {
+        const have = new Set(it.tags.map((t) => t.toLocaleLowerCase('en-US')));
+        if (!wantTags.every((t) => have.has(t))) return false;
+      }
+      return true;
     })
-    .filter(Boolean)
-    .sort((a, b) => b.savedAt - a.savedAt);
-  res.json(items);
+    .sort((a, b) => (b._savedAtMs - a._savedAtMs) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    .map(({ _savedAtMs, ...rest }) => rest);
+
+  res.json({ total: all.length, count: items.length, items });
 });
 
 app.post('/api/plans', (req, res) => {
   try {
+    // 标签/备注先于一切写操作严格校验：非法输入整请求拒绝，绝不改动旧存档
+    const tags = E.normalizeTags(req.body && req.body.tags);
+    const note = E.normalizeNote(req.body && req.body.note);
     const plan = E.normalizePlan(req.body || {});
     const body = {
       name: plan.name, rows: plan.rows, cols: plan.cols,
       labels: plan.labels, steps: plan.steps,
+      tags, note,
       savedAt: new Date().toISOString()
     };
     // 爬移补偿独立方案字段：存在则随存档保留（GET /api/plans/:id 原样返回）
     if (plan.creepCompensation) body.creepCompensation = plan.creepCompensation;
     let id = (req.body && typeof req.body.id === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(req.body.id))
       ? req.body.id : crypto.randomBytes(6).toString('hex');
-    fs.writeFileSync(planFile(id), JSON.stringify(body, null, 2));
+    // 原子写：先写临时文件再 rename，失败也不会留下半截旧存档
+    const tmp = planFile(id) + '.tmp-' + process.pid;
+    fs.writeFileSync(tmp, JSON.stringify(body, null, 2));
+    fs.renameSync(tmp, planFile(id));
     res.json({ ok: true, id, plan: body });
   } catch (e) {
-    res.status(400).json({ ok: false, error: { code: 'bad_plan', message: e.message } });
+    const code = e && (e.code === 'bad_tags' || e.code === 'bad_note') ? e.code : 'bad_plan';
+    res.status(400).json({ ok: false, error: { code, message: e.message } });
   }
 });
 
